@@ -1,18 +1,18 @@
 # Team Information
 
-**Course:** _[fill your course code and name]_
+**Course:** 32806 - EMAI
 
-**Semester:** Semester 2, 2020
+**Semester:** Semester 1 year 1
 
-**Instructor:** _[name of your instructor]_
+**Instructor:** Javier Segovia-Aguas
 
-**Team name:** _[replace this with team name in plan text]_
+**Team name:** The Packstreet Boys
 
 **Team members:**
 
-* Student 1's Student number - Full Name - Student email - Student Github id
-* Student 2's Student number - Full Name - Student email - Student Github id
-* Student 3's Student number - Full Name - Student email - Student Github id
+* 268602 - Erika Marques Rosenfeld - erika.marques01@estudiant.upf.edu - erikarosenfeld
+* 260855 - Pietro Sestito - pietro.sestito01@estudiant.upf.edu - pietrosestito96-del
+* 268613 - Ian Kahn - ian.kahn01@estudiant.upf.edu - lemur1905
 
 Replace the lines above with the correct details of members. Delete or add lines as needed.
 
