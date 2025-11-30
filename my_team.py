@@ -15,55 +15,31 @@ from game import Directions
 from util import nearest_point
 
 
-#################
-# Team creation #
-#################
-
 def create_team(first_index, second_index, is_red,
-                first='AStarOffensiveAgent', second='TPBDefensiveReflexAgent', num_training=0):
-    """
-    This function should return a list of two agents that will form the
-    team, initialized using firstIndex and secondIndex as their agent
-    index numbers.  isRed is True if the red team is being created, and
-    will be False if the blue team is being created.
-    """
+                first='TPBAStarOffensiveAgent', second='TPBDefensiveReflexAgent', num_training=0):
     return [eval(first)(first_index), eval(second)(second_index)]
 
 
-##########
-# Agents #
-##########
-
-class AStarOffensiveAgent(CaptureAgent):
+class TPBAStarOffensiveAgent(CaptureAgent):
     """
-    Advanced offensive agent using A* pathfinding, behavior trees,
-    and intelligent decision making
+    Advanced offensive agent using A* pathfinding with intelligent mode switching
     """
 
     def __init__(self, index, time_for_computing=.1):
         super().__init__(index, time_for_computing)
         self.start = None
-        self.target_food = None
-        self.mode = 'collect'  # Modes: 'collect', 'return', 'escape', 'hunt_capsule'
+        self.mode = 'collect'
         self.safe_boundary_positions = []
-        self.food_collected_this_trip = 0
         self.last_positions = []
-        self.stuck_counter = 0
 
     def register_initial_state(self, game_state):
         self.start = game_state.get_agent_position(self.index)
         CaptureAgent.register_initial_state(self, game_state)
-        
-        # Pre-compute safe boundary positions for quick returns
         self.compute_boundary_positions(game_state)
 
     def compute_boundary_positions(self, game_state):
-        """
-        Pre-compute all valid positions on our side of the boundary
-        """
         layout = game_state.data.layout
         boundary_x = layout.width // 2
-        
         if self.red:
             boundary_x -= 1
         
@@ -73,29 +49,15 @@ class AStarOffensiveAgent(CaptureAgent):
                 self.safe_boundary_positions.append((boundary_x, y))
 
     def choose_action(self, game_state):
-        """
-        Main decision-making function with mode-based behavior
-        """
         my_pos = game_state.get_agent_position(self.index)
-        my_state = game_state.get_agent_state(self.index)
         
         # Track if we're stuck
         self.last_positions.append(my_pos)
         if len(self.last_positions) > 6:
             self.last_positions.pop(0)
-            if len(set(self.last_positions)) <= 2:
-                self.stuck_counter += 1
-            else:
-                self.stuck_counter = 0
 
         # Update mode based on situation
-        old_mode = self.mode
         self.update_mode(game_state)
-        
-        # DEBUG: Print mode changes
-        if old_mode != self.mode:
-            food_carrying = my_state.num_carrying
-            print(f"DEBUG: Mode changed from {old_mode} to {self.mode} (carrying {food_carrying} food)")
         
         # Get legal actions
         actions = game_state.get_legal_actions(self.index)
@@ -109,51 +71,66 @@ class AStarOffensiveAgent(CaptureAgent):
             return self.return_home_action(game_state, actions)
         elif self.mode == 'hunt_capsule':
             return self.hunt_capsule_action(game_state, actions)
-        else:  # collect mode
+        else:
             return self.collect_food_action(game_state, actions)
 
     def update_mode(self, game_state):
-        """
-        SIMPLIFIED mode switching with debug prints
-        """
         my_state = game_state.get_agent_state(self.index)
+        my_pos = game_state.get_agent_position(self.index)
         food_carrying = my_state.num_carrying
         
-        # DEBUG: Print when we have food but aren't returning
-        if food_carrying >= 2 and self.mode != 'return':
-            print(f"DEBUG: Carrying {food_carrying} food but mode is {self.mode}")
+        # Get enemy information
+        enemies = [game_state.get_agent_state(i) for i in self.get_opponents(game_state)]
+        ghosts = [a for a in enemies if not a.is_pacman and a.get_position() is not None]
         
-        # SUPER SIMPLE: Return after 2 food, otherwise collect
-        if food_carrying >= 2:
+        # Danger detection
+        in_danger = False
+        if ghosts:
+            dangerous_ghosts = [g for g in ghosts if g.scared_timer < 5]
+            if dangerous_ghosts:
+                dangerous_distances = [self.get_maze_distance(my_pos, g.get_position()) 
+                                      for g in dangerous_ghosts]
+                min_danger_dist = min(dangerous_distances)
+                if min_danger_dist <= 4:
+                    in_danger = True
+
+        # Mode decision logic
+        if in_danger:
+            self.mode = 'escape'
+        elif food_carrying >= 2:
             self.mode = 'return'
-            print(f"FORCING RETURN: Carrying {food_carrying} food")
         else:
             self.mode = 'collect'
 
     def escape_action(self, game_state, actions):
-        """
-        SIMPLIFIED but more effective escape
-        """
         my_pos = game_state.get_agent_position(self.index)
-        print("DEBUG: ESCAPE MODE ACTIVATED")
         
-        # Strategy: Just find the closest safe spot and go there
-        closest_safe_pos = min(self.safe_boundary_positions,
-                              key=lambda pos: self.get_maze_distance(my_pos, pos))
+        # Get ghost positions
+        enemies = [game_state.get_agent_state(i) for i in self.get_opponents(game_state)]
+        ghosts = [a for a in enemies if not a.is_pacman and a.get_position() is not None]
         
-        # Use simple pathfinding without complex ghost avoidance
-        best_action = self.get_fallback_action(game_state, closest_safe_pos)
+        # Find safest escape route
+        safe_options = []
+        for safe_pos in self.safe_boundary_positions:
+            dist_to_safe = self.get_maze_distance(my_pos, safe_pos)
+            if ghosts:
+                ghost_dists_to_safe = [self.get_maze_distance(safe_pos, g.get_position()) for g in ghosts]
+                min_ghost_dist_to_safe = min(ghost_dists_to_safe)
+            else:
+                min_ghost_dist_to_safe = 10
+            safety_score = min_ghost_dist_to_safe * 2 - dist_to_safe
+            safe_options.append((safety_score, safe_pos))
         
-        # If that doesn't work, use the move that maximizes distance from ghosts
-        if not best_action:
-            best_action = self.move_away_from_ghosts(game_state, actions)
+        # Try safest escape routes
+        safe_options.sort(reverse=True, key=lambda x: x[0])
+        for score, safe_pos in safe_options[:2]:
+            best_action = self.a_star_search(game_state, safe_pos, avoid_ghosts=True)
+            if best_action:
+                return best_action
         
-        return best_action if best_action else random.choice(actions)
+        return self.move_away_from_ghosts(game_state, actions)
 
     def move_away_from_ghosts(self, game_state, actions):
-        """
-        SIMPLIFIED ghost avoidance - just maximize minimum distance
-        """
         my_pos = game_state.get_agent_position(self.index)
         enemies = [game_state.get_agent_state(i) for i in self.get_opponents(game_state)]
         ghosts = [a for a in enemies if not a.is_pacman and a.get_position() is not None]
@@ -167,16 +144,8 @@ class AStarOffensiveAgent(CaptureAgent):
         for action in actions:
             successor = game_state.generate_successor(self.index, action)
             new_pos = successor.get_agent_position(self.index)
-            
-            # Calculate minimum distance to any ghost
-            min_ghost_dist = min([self.get_maze_distance(new_pos, g.get_position()) 
-                                 for g in ghosts])
-            
-            # Also check if this gets us closer to home
-            dist_to_home = min([self.get_maze_distance(new_pos, safe_pos) 
-                               for safe_pos in self.safe_boundary_positions])
-            
-            # Combined score: prioritize ghost distance, then home distance
+            min_ghost_dist = min([self.get_maze_distance(new_pos, g.get_position()) for g in ghosts])
+            dist_to_home = min([self.get_maze_distance(new_pos, safe_pos) for safe_pos in self.safe_boundary_positions])
             score = min_ghost_dist * 3 - dist_to_home
             
             if score > best_min_distance:
@@ -186,35 +155,17 @@ class AStarOffensiveAgent(CaptureAgent):
         return best_action if best_action else random.choice(actions)
 
     def return_home_action(self, game_state, actions):
-        """
-        Return home efficiently using A* with debug prints
-        """
         my_pos = game_state.get_agent_position(self.index)
-        food_carrying = game_state.get_agent_state(self.index).num_carrying
-        
-        print(f"DEBUG: Trying to return home with {food_carrying} food from position {my_pos}")
-        
-        # Find closest boundary position
         closest_home = min(self.safe_boundary_positions,
                           key=lambda pos: self.get_maze_distance(my_pos, pos))
         
-        print(f"DEBUG: Closest home position is {closest_home}")
-        
         best_action = self.a_star_search(game_state, closest_home, avoid_ghosts=True)
-        
         if best_action:
-            print(f"DEBUG: A* found path home: {best_action}")
             return best_action
-        else:
-            print("DEBUG: A* failed to find path home, using fallback")
         
-        # Fallback
         return self.get_best_action_by_evaluation(game_state, actions, 'return')
 
     def hunt_capsule_action(self, game_state, actions):
-        """
-        Go for power capsule strategically
-        """
         capsules = self.get_capsules(game_state)
         if not capsules:
             self.mode = 'collect'
@@ -222,7 +173,6 @@ class AStarOffensiveAgent(CaptureAgent):
         
         my_pos = game_state.get_agent_position(self.index)
         closest_capsule = min(capsules, key=lambda cap: self.get_maze_distance(my_pos, cap))
-        
         best_action = self.a_star_search(game_state, closest_capsule, avoid_ghosts=False)
         
         if best_action:
@@ -231,31 +181,21 @@ class AStarOffensiveAgent(CaptureAgent):
         return self.get_best_action_by_evaluation(game_state, actions, 'capsule')
 
     def collect_food_action(self, game_state, actions):
-        """
-        Intelligent food collection with strategic target selection
-        """
         my_pos = game_state.get_agent_position(self.index)
         food_list = self.get_food(game_state).as_list()
         
         if not food_list:
             return random.choice(actions)
         
-        # Select best food target
         target = self.select_best_food_target(game_state, food_list)
-        
-        # Use A* to reach target
         best_action = self.a_star_search(game_state, target, avoid_ghosts=True)
         
         if best_action:
             return best_action
         
-        # Fallback to evaluation-based selection
         return self.get_best_action_by_evaluation(game_state, actions, 'collect')
 
     def select_best_food_target(self, game_state, food_list):
-        """
-        Select the best food pellet with ENHANCED safety consideration
-        """
         my_pos = game_state.get_agent_position(self.index)
         
         # Get ghost positions
@@ -268,64 +208,46 @@ class AStarOffensiveAgent(CaptureAgent):
         best_score = float('-inf')
         
         for food in food_list:
-            # Calculate distance to food
             food_dist = self.get_maze_distance(my_pos, food)
+            home_dist = min([self.get_maze_distance(food, safe_pos) for safe_pos in self.safe_boundary_positions])
             
-            # Calculate distance back home from food
-            home_dist = min([self.get_maze_distance(food, safe_pos) 
-                           for safe_pos in self.safe_boundary_positions])
-            
-            # Calculate minimum distance to any ghost - CRITICAL FACTOR
             ghost_safety = float('inf')
             if ghost_positions:
-                ghost_safety = min([self.get_maze_distance(food, ghost_pos) 
-                                  for ghost_pos in ghost_positions])
+                ghost_safety = min([self.get_maze_distance(food, ghost_pos) for ghost_pos in ghost_positions])
             
-            # ENHANCED: Don't go for food that's too close to ghosts
             if ghost_safety < 3:
-                # Very dangerous food, heavily penalize
                 score = -1000
             elif ghost_safety < 5:
-                # Somewhat dangerous
                 score = -food_dist * 2 + ghost_safety * 5 - home_dist * 0.3
             else:
-                # Safe food, normal scoring
                 score = -food_dist + ghost_safety * 0.5 - home_dist * 0.2
             
-            # Bonus for food that's on the way home
             if (not self.red and food[0] < my_pos[0]) or (self.red and food[0] > my_pos[0]):
-                score += 2  # Food is towards home
+                score += 2
             
             if score > best_score:
                 best_score = score
                 best_food = food
         
-        # If all food is dangerous, pick the safest one
         if best_score == -1000:
-            # Just pick the one farthest from ghosts
             if ghost_positions:
                 best_food = max(food_list, 
-                              key=lambda f: min([self.get_maze_distance(f, gp) 
-                                               for gp in ghost_positions]))
+                              key=lambda f: min([self.get_maze_distance(f, gp) for gp in ghost_positions]))
             else:
                 best_food = min(food_list, key=lambda f: self.get_maze_distance(my_pos, f))
         
         return best_food if best_food else food_list[0]
 
     def a_star_search(self, game_state, goal, avoid_ghosts=True):
-        """
-        ENHANCED A* pathfinding with better ghost avoidance and timeout
-        Returns the first action to take
-        """
         start_time = time.time()
-        max_time = 0.8  # 800ms timeout
+        max_time = 0.8
         
         start_pos = game_state.get_agent_position(self.index)
         
         if start_pos == goal:
             return None
         
-        # Get ghost positions and their predicted next positions
+        # Get ghost danger zones
         ghost_danger_zones = set()
         if avoid_ghosts:
             enemies = [game_state.get_agent_state(i) for i in self.get_opponents(game_state)]
@@ -334,26 +256,26 @@ class AStarOffensiveAgent(CaptureAgent):
                     if enemy.scared_timer < 2:
                         ghost_pos = enemy.get_position()
                         ghost_danger_zones.add(ghost_pos)
-                        
-                        # Add all positions within 2 steps of ghost as danger zones
+                        layout = game_state.data.layout
                         x, y = int(ghost_pos[0]), int(ghost_pos[1])
                         for dx in range(-2, 3):
                             for dy in range(-2, 3):
-                                if abs(dx) + abs(dy) <= 2:  # Manhattan distance <= 2
+                                if abs(dx) + abs(dy) <= 2:
                                     danger_pos = (x + dx, y + dy)
-                                    if not game_state.has_wall(int(danger_pos[0]), int(danger_pos[1])):
+                                    if (0 <= danger_pos[0] < layout.width and 
+                                        0 <= danger_pos[1] < layout.height and
+                                        not game_state.has_wall(int(danger_pos[0]), int(danger_pos[1]))):
                                         ghost_danger_zones.add(danger_pos)
         
-        # A* implementation with enhanced ghost avoidance
+        # A* implementation
         frontier = []
         heapq.heappush(frontier, (0, start_pos, [], 0))
         explored = set()
         
-        max_iterations = 300  # Prevent infinite loops
+        max_iterations = 300
         iterations = 0
         
         while frontier and iterations < max_iterations:
-            # Check timeout
             if time.time() - start_time > max_time:
                 return self.get_fallback_action(game_state, goal)
                 
@@ -378,58 +300,51 @@ class AStarOffensiveAgent(CaptureAgent):
                 if next_pos in explored:
                     continue
                 
+                layout = game_state.data.layout
                 # Check if position is valid
-                if game_state.has_wall(int(next_pos[0]), int(next_pos[1])):
-                    continue
-                
-                # Calculate cost with HEAVY ghost penalties
-                new_cost = cost + 1
-                
-                # CRITICAL: If in ghost danger zone, add massive penalty
-                if next_pos in ghost_danger_zones:
-                    # Check exact distance to nearest ghost
-                    if avoid_ghosts:
+                if (0 <= next_pos[0] < layout.width and 
+                    0 <= next_pos[1] < layout.height and
+                    not game_state.has_wall(int(next_pos[0]), int(next_pos[1]))):
+                    
+                    # Calculate base cost
+                    new_cost = cost + 1
+                    
+                    # Add ghost penalties if needed
+                    if avoid_ghosts and next_pos in ghost_danger_zones:
                         enemies = [game_state.get_agent_state(i) for i in self.get_opponents(game_state)]
                         ghost_positions = [a.get_position() for a in enemies 
                                          if not a.is_pacman and a.get_position() is not None 
                                          and a.scared_timer < 2]
                         if ghost_positions:
-                            min_ghost_dist = min([self.get_maze_distance(next_pos, gp) 
-                                                 for gp in ghost_positions])
-                            
-                            if min_ghost_dist == 0:
-                                new_cost += 200  # On top of ghost
-                            elif min_ghost_dist == 1:
-                                new_cost += 100  # Next to ghost
-                            elif min_ghost_dist == 2:
-                                new_cost += 50   # Near ghost
-                
-                # Heuristic: Manhattan distance to goal
-                heuristic = abs(next_pos[0] - goal[0]) + abs(next_pos[1] - goal[1])
-                priority = new_cost + heuristic
-                
-                # Determine action that led to next_pos
-                if not path:
-                    dx = next_pos[0] - current_pos[0]
-                    dy = next_pos[1] - current_pos[1]
-                    if dx > 0:
-                        action = Directions.EAST
-                    elif dx < 0:
-                        action = Directions.WEST
-                    elif dy > 0:
-                        action = Directions.NORTH
+                            min_ghost_dist = min([self.get_maze_distance(next_pos, gp) for gp in ghost_positions])
+                            if min_ghost_dist <= 2:
+                                new_cost += 50 * (3 - min_ghost_dist)  # Penalty based on distance
+                    
+                    # Calculate priority
+                    heuristic = abs(next_pos[0] - goal[0]) + abs(next_pos[1] - goal[1])
+                    priority = new_cost + heuristic
+                    
+                    # Determine action
+                    if not path:
+                        dx = next_pos[0] - current_pos[0]
+                        dy = next_pos[1] - current_pos[1]
+                        if dx > 0:
+                            action = Directions.EAST
+                        elif dx < 0:
+                            action = Directions.WEST
+                        elif dy > 0:
+                            action = Directions.NORTH
+                        else:
+                            action = Directions.SOUTH
+                        new_path = [action]
                     else:
-                        action = Directions.SOUTH
-                    new_path = [action]
-                else:
-                    new_path = path
-                
-                heapq.heappush(frontier, (priority, next_pos, new_path, new_cost))
+                        new_path = path
+                    
+                    heapq.heappush(frontier, (priority, next_pos, new_path, new_cost))
         
-        return self.get_fallback_action(game_state, goal)  # Fallback if no path found
+        return self.get_fallback_action(game_state, goal)
 
     def get_fallback_action(self, game_state, goal):
-        """Simple greedy fallback when A* times out or fails"""
         my_pos = game_state.get_agent_position(self.index)
         actions = game_state.get_legal_actions(self.index)
         
@@ -451,9 +366,6 @@ class AStarOffensiveAgent(CaptureAgent):
         return best_action if best_action else random.choice(actions)
 
     def get_best_action_by_evaluation(self, game_state, actions, mode):
-        """
-        Fallback evaluation function
-        """
         values = []
         for action in actions:
             successor = game_state.generate_successor(self.index, action)
@@ -466,55 +378,37 @@ class AStarOffensiveAgent(CaptureAgent):
         return random.choice(best_actions)
 
     def evaluate_state(self, game_state, mode):
-        """
-        Evaluate game state based on current mode
-        """
         my_state = game_state.get_agent_state(self.index)
         my_pos = my_state.get_position()
         score = 0
         
-        # Get enemy information
         enemies = [game_state.get_agent_state(i) for i in self.get_opponents(game_state)]
         ghosts = [a for a in enemies if not a.is_pacman and a.get_position() is not None]
         
-        # Ghost distance factor
         if ghosts:
             min_ghost_dist = min([self.get_maze_distance(my_pos, g.get_position()) for g in ghosts])
             score += min_ghost_dist * 10
         
-        # Mode-specific evaluation
         if mode == 'return':
-            # Reward getting closer to home
-            boundary_dist = min([self.get_maze_distance(my_pos, pos) 
-                               for pos in self.safe_boundary_positions])
+            boundary_dist = min([self.get_maze_distance(my_pos, pos) for pos in self.safe_boundary_positions])
             score -= boundary_dist * 100
-        
         elif mode == 'collect':
-            # Reward proximity to food
             food_list = self.get_food(game_state).as_list()
             if food_list:
                 min_food_dist = min([self.get_maze_distance(my_pos, food) for food in food_list])
                 score -= min_food_dist * 5
-        
         elif mode == 'capsule':
-            # Reward proximity to capsules
             capsules = self.get_capsules(game_state)
             if capsules:
                 min_cap_dist = min([self.get_maze_distance(my_pos, cap) for cap in capsules])
                 score -= min_cap_dist * 20
         
-        # General score improvement
         score += self.get_score(game_state) * 100
         
         return score
 
 
-# Reflex Agent Base Class (needed for defensive agent)
 class ReflexCaptureAgent(CaptureAgent):
-    """
-    A base class for reflex agents that choose score-maximizing actions
-    """
-
     def __init__(self, index, time_for_computing=.1):
         super().__init__(index, time_for_computing)
         self.start = None
@@ -524,9 +418,6 @@ class ReflexCaptureAgent(CaptureAgent):
         CaptureAgent.register_initial_state(self, game_state)
 
     def choose_action(self, game_state):
-        """
-        Picks among the actions with the highest Q(s,a).
-        """
         actions = game_state.get_legal_actions(self.index)
         values = [self.evaluate(game_state, a) for a in actions]
         max_value = max(values)
@@ -549,9 +440,6 @@ class ReflexCaptureAgent(CaptureAgent):
         return random.choice(best_actions)
 
     def get_successor(self, game_state, action):
-        """
-        Finds the next successor which is a grid position (location tuple).
-        """
         successor = game_state.generate_successor(self.index, action)
         pos = successor.get_agent_state(self.index).get_position()
         if pos != nearest_point(pos):
@@ -560,34 +448,24 @@ class ReflexCaptureAgent(CaptureAgent):
             return successor
 
     def evaluate(self, game_state, action):
-        """
-        Computes a linear combination of features and feature weights
-        """
         features = self.get_features(game_state, action)
         weights = self.get_weights(game_state, action)
         return features * weights
 
     def get_features(self, game_state, action):
-        """
-        Returns a counter of features for the state
-        """
         features = util.Counter()
         successor = self.get_successor(game_state, action)
         features['successor_score'] = self.get_score(successor)
         return features
 
     def get_weights(self, game_state, action):
-        """
-        Normally, weights do not depend on the game state.  They can be either
-        a counter or a dictionary.
-        """
         return {'successor_score': 1.0}
 
 
 class TPBDefensiveReflexAgent(ReflexCaptureAgent):
-    """
-    A reflex agent that keeps its side Pacman-free.
-    """
+    #We updated the defensive reflex agent in order to make it more efficient.
+    #Its main aims are to guard our food and to eat enemy pacmans approaching
+    #to our side.
 
     def get_features(self, game_state, action):
         features = util.Counter()
@@ -596,23 +474,34 @@ class TPBDefensiveReflexAgent(ReflexCaptureAgent):
         my_state = successor.get_agent_state(self.index)
         my_pos = my_state.get_position()
 
-        # Computes whether we're on defense (1) or offense (0)
+        #determines whether we're on defense (1) or offense (0)
         features['on_defense'] = 1
-        if my_state.is_pacman: features['on_defense'] = 0
+        if my_state.is_pacman: 
+            features['on_defense'] = 0
 
-        # Computes distance to invaders we can see
+        #measure distance of invaders that can be seen 
         enemies = [successor.get_agent_state(i) for i in self.get_opponents(successor)]
         invaders = [a for a in enemies if a.is_pacman and a.get_position() is not None]
         features['num_invaders'] = len(invaders)
+        
         if len(invaders) > 0:
             dists = [self.get_maze_distance(my_pos, a.get_position()) for a in invaders]
             features['invader_distance'] = min(dists)
+        else:
+            #in case there are no visible invaders: we patrol defensively close to our food
+            food_list = self.get_food(successor).as_list()
+            if len(food_list) > 0:
+                #move towards the center of our food to patrol it
+                min_dist_to_food = min([self.get_maze_distance(my_pos, food) for food in food_list])
+                features['food_defense_distance'] = min_dist_to_food
 
-        if action == Directions.STOP: features['stop'] = 1
+        if action == Directions.STOP: 
+            features['stop'] = 1
         rev = Directions.REVERSE[game_state.get_agent_state(self.index).configuration.direction]
-        if action == rev: features['reverse'] = 1
+        if action == rev: 
+            features['reverse'] = 1
 
         return features
 
     def get_weights(self, game_state, action):
-        return {'num_invaders': -1000, 'on_defense': 100, 'invader_distance': -10, 'stop': -100, 'reverse': -2}
+        return {'num_invaders': -1000, 'on_defense': 100, 'invader_distance': -25, 'stop': -100, 'reverse': -2, 'food_defense_distance': -3}
